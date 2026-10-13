@@ -164,6 +164,32 @@ def _custom():
 PRINT_LETTERS = 'abcdefghijklmnopqrstuvwzABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 
+@lru_cache(maxsize=8)
+def _normalised(name):
+    """A font rescaled so its measured x-height is ``XH`` units.
+
+    The EMS fonts declare x-height 300 but draw it at 356 (Allure) or 485
+    (Readability); mixing them unscaled made print letters 1.6x too tall.
+    Digits are pulled in a little (``DIGIT_SCALE``: handwritten digits are
+    about 1.5 x-heights, not a typeface's 1.8) and capitals are set to
+    ``CAP_HEIGHT``.
+    """
+    g = load_font(name)
+    tops = [np.vstack(g[c][1])[:, 1].max() for c in 'acemnorsuvwxz' if c in g and g[c][1]]
+    k = XH / float(np.median(tops))
+    caps = [np.vstack(g[c][1])[:, 1].max() for c in 'EFHIKLMNTZ' if c in g and g[c][1]]
+    kc = CAP_HEIGHT * XH / float(np.median(caps))
+    out = {}
+    for ch, (adv, polys) in g.items():
+        kk = k * DIGIT_SCALE if ch.isdigit() else kc if ch.isupper() else k
+        out[ch] = (adv * kk, [p * kk for p in polys])
+    return out
+
+
+DIGIT_SCALE = 0.88
+CAP_HEIGHT = 1.45   # capitals, in x-heights
+
+
 @lru_cache(maxsize=16)
 def glyph_table(font='EMSAllure', upper='EMSReadability', print_letters=PRINT_LETTERS):
     """Base font for digits/symbols; ``print_letters`` come from the ``upper`` (print) font.
@@ -172,9 +198,9 @@ def glyph_table(font='EMSAllure', upper='EMSReadability', print_letters=PRINT_LE
     formulae (CH3COOH), so by default only x and y keep the script forms people
     actually write in maths.
     """
-    table = dict(load_font(font))
+    table = dict(_normalised(font))
     if upper and upper != font:
-        up = load_font(upper)
+        up = _normalised(upper)
         for ch in print_letters:
             if ch in up:
                 table[ch] = up[ch]

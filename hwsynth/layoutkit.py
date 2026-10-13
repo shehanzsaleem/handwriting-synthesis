@@ -34,15 +34,30 @@ def _segments(word):
 def tokens(text):
     """-> list of ('math', src) | ('word', [segments]) in reading order."""
     out = []
+    emphasis = [False]          # **bold** words are underlined, as people do by hand
     for chunk in MATH_RE.split(text):
         if not chunk:
             continue
         if chunk.startswith('$') and chunk.endswith('$') and len(chunk) > 1:
             out.append(('math', chunk[1:-1], chunk))
             continue
+        if out and out[-1][0] == 'math' and not chunk[:1].isspace():
+            # punctuation written straight after maths ("$x = 2$,") belongs to the maths box
+            head = re.match(r'[.,;:!?)]+', chunk)
+            if head:
+                m = out[-1]
+                out[-1] = ('math', m[1] + head.group(0), m[2])
+                chunk = chunk[head.end():]
         for w in chunk.split():
-            out.append(('word', _segments(w), w))
-    # glue punctuation that follows maths ("$x = 2$,") to the maths box
+            emph = w.startswith('**') or emphasis[0]
+            if w.startswith('**'):
+                emphasis[0] = True
+                w = w[2:]
+            if w.endswith('**') or w.rstrip('.,;:!?').endswith('**'):
+                emphasis[0] = False
+                w = w.replace('**', '')
+            if w:
+                out.append(('word', _segments(w), w, emph))
     return out
 
 
@@ -74,6 +89,11 @@ def build_token_boxes(hand, ms, toks, scale=1.0, key='t'):
             strokes += [s * scale + [x, 0] for s in ink.strokes]
             x += ink.width * scale
             asc, desc = max(asc, ink.ascent * scale), max(desc, ink.descent * scale)
+        if len(t) > 3 and t[3]:
+            rng = np.random.default_rng(_h(key, i, 'ul'))
+            y = desc + 0.45 * hand.profile.x_height
+            strokes.append(np.array([[-0.3, y], [x * 0.5, y + rng.normal(0, 0.15)], [x + 0.4, y + rng.normal(0, 0.2)]]))
+            desc = y + 0.2
         boxes.append(Box(x, asc, desc, strokes))
     return boxes
 

@@ -385,6 +385,10 @@ class MathSetter:
         prev = None
         for b in boxes:
             gap = 0.12 * xh
+            if (prev is not None and prev.kind == 'open') or b.kind == 'close':
+                gap = -0.12 * xh      # handwritten brackets hug their contents
+            elif b.kind == 'open' and prev is not None and prev.kind == 'ord':
+                gap = 0.05 * xh
             if b.kind == 'rel' or (prev is not None and prev.kind == 'rel'):
                 gap = 0.75 * xh
             elif b.kind == 'bin' and prev is not None and prev.kind not in ('open', 'rel', 'bin', 'punct'):
@@ -647,7 +651,7 @@ class MathSetter:
 
     def bigop(self, n, scale, display):
         xh = self.xh * scale
-        big = 1.6 if display else 1.2
+        big = (2.0 if n.value.startswith('∫') else 1.7) if display else 1.3
         sym = self._glyph_box(n.value, scale * big, 'op')
         # centre the operator on the maths axis
         axis = 0.62 * xh

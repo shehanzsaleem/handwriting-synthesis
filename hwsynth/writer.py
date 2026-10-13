@@ -19,7 +19,7 @@ import numpy as np
 from .model import Network, Sample, SUPPORTED
 from .strokes import Ink, to_ink
 
-ENGINE_VERSION = 'hwsynth-2'
+ENGINE_VERSION = 'hwsynth-3'
 _LOOKALIKE = str.maketrans({'0': 'o', 'O': 'o', '1': 'l', 'I': 'l', '|': 'l', 'i': 'l', '!': 'l',
                             '5': 's', 'S': 's', 'Z': 'z', '×': 'x', 'X': 'x', 'C': 'c', 'V': 'v',
                             'W': 'w', 'U': 'u', 'K': 'k', 'P': 'p', 'Y': 'y', "'": '', '"': '',
@@ -72,6 +72,37 @@ class _Reader:
         return ''.join(r[1] for r in res)
 
 
+SHORT = set('acemnorsuvwxz')
+TALL = set('bdfhklt') | set('ABCDEFGHIJKLMNOPRSTUVWY0123456789')
+DROP = set('gjpqy')
+WIDE = set('mwMW')
+ROUND = set('aoexdgqpbcs')
+
+
+def shape_penalty(ink: Ink, text: str, xh: float) -> float:
+    """Count letters whose drawn size does not fit their class (capital-sized 's', squashed 'x')."""
+    bad = 0.0
+    for ch, hs, vs in zip(text, ink.char_spans, ink.char_vspans):
+        if ch == ' ' or ch not in SHORT | TALL | DROP:
+            continue
+        if hs is None or vs is None:
+            bad += 1.0                    # the letter was never really written
+            continue
+        w = (hs[1] - hs[0]) / xh
+        top, bot = -vs[0] / xh, vs[1] / xh
+        if ch in SHORT and top > 1.45:
+            bad += 1.0
+        if ch in TALL and top < 1.2:
+            bad += 0.7
+        if ch in DROP and bot < 0.35:
+            bad += 0.7
+        if ch in WIDE and w < 0.7:
+            bad += 0.7
+        if ch in ROUND | {'x'} and w < 0.32:
+            bad += 0.7
+    return bad
+
+
 @dataclass
 class Choice:
     sample: Sample
@@ -89,6 +120,7 @@ class Writer:
         self.cache.mkdir(parents=True, exist_ok=True)
         self._net = None
         self._reader = None
+        self._unit = None
 
     # -- cache -------------------------------------------------------------
     def _key(self, text, variant=0):
@@ -110,30 +142,58 @@ class Writer:
                  read=np.array(c.read), distance=np.array(c.distance))
         os.replace(tmp, f)
 
+    # -- calibration ---------------------------------------------------------
+    CALIBRATION = ['the quick brown fox jumps over a lazy dog', 'we measure the size of this writing once',
+                   'some more ordinary words in a row']
+
+    def unit_scale(self):
+        """mm per network unit for this style, from a few long calibration lines (cached)."""
+        if self._unit is not None:
+            return self._unit
+        f = self.cache / f'calib-{ENGINE_VERSION}-{self.style}-{self.bias}.json'
+        if f.exists():
+            xh_units = json.loads(f.read_text())['x_height_units']
+        else:
+            if self._net is None:
+                self._net = Network()
+            samples = self._net.sample(self.CALIBRATION, style=self.style, bias=self.bias,
+                                       seeds=[11, 12, 13])
+            # with x_height_mm = 1 the returned ink is measured in network x-heights
+            xs = []
+            for smp in samples:
+                ink = to_ink(smp, 1.0)
+                raw = to_ink(smp, 1.0, unit_scale=1.0)
+                xs.append(raw.width / max(ink.width, 1e-9))
+            xh_units = float(np.median(xs))
+            f.write_text(json.dumps({'x_height_units': xh_units}))
+        self._unit = self.x_height / xh_units
+        return self._unit
+
     # -- sampling ----------------------------------------------------------
     def _seed_for(self, text, variant=0):
         h = hashlib.sha256(f'{self.seed}|{self.style}|{self.bias}|{text}|{variant}'.encode()).digest()
         return int.from_bytes(h[:8], 'little')
 
     def _choose(self, text, samples):
+        """Rank candidates: OCR distance + letter-shape penalty; earliest wins ties."""
         best = None
+        have_ocr = bool(self.verify and self._reader and self._reader.ocr)
+        letters = sum(c.isalpha() for c in text)
         for i, s in enumerate(samples):
             if len(s.offsets) < 3:
                 continue
-            ink = to_ink(s, self.x_height)
-            # reject runaway samples: absurd width for the character count
-            per_char = ink.width / max(len(text), 1)
+            ink = to_ink(s, self.x_height, unit_scale=self.unit_scale())
+            per_char = ink.width / max(len(text.strip()), 1)
             sane = 0.25 * self.x_height < per_char < 3.2 * self.x_height and ink.ascent < 4.5 * self.x_height
-            read = self._reader.read(ink) if (self.verify and self._reader) else ''
-            dist = (_lev(_canon(read), _canon(text)) / max(len(_canon(text)), 1)) if read or self.verify else 0.0
-            if not self._reader or not self._reader.ocr:
-                dist = 0.0
-            score = dist + (0 if sane else 10) + i * 1e-3   # earlier candidate wins ties
+            read = self._reader.read(ink) if have_ocr and letters >= 3 else ''
+            dist = (_lev(_canon(read), _canon(text)) / max(len(_canon(text)), 1)) if read or (have_ocr and letters >= 3) else 0.0
+            shape = shape_penalty(ink, text, self.x_height)
+            score = dist + 0.25 * shape + (0 if sane else 10) + i * 1e-4
             if best is None or score < best[0]:
                 best = (score, Choice(s, read, dist))
-            if self.verify and self._reader and self._reader.ocr and dist == 0 and sane:
+            if dist == 0 and shape == 0 and sane and (have_ocr or letters < 3):
                 break
-        return best[1]
+        return best
 
     def write_many(self, texts, variants=None):
         """Return one ``Ink`` per text (every char must be in the network alphabet).
@@ -168,11 +228,27 @@ class Writer:
                 rows = [t for t, _ in group for _ in range(K)]
                 seeds = [self._seed_for(t, v) + k for t, v in group for k in range(K)]
                 samples = self._net.sample(rows, style=self.style, bias=self.bias, seeds=seeds)
+                retry = []
                 for j, (t, v) in enumerate(group):
-                    c = self._choose(t, samples[j * K:(j + 1) * K])
-                    self._store(t, v, c)
-                    out[(t, v)] = c
-        return [to_ink(out[j].sample, self.x_height) for j in jobs]
+                    score, c = self._choose(t, samples[j * K:(j + 1) * K])
+                    if score > 0.12:
+                        retry.append((t, v, score, c))
+                    else:
+                        self._store(t, v, c)
+                        out[(t, v)] = c
+                if retry:
+                    # escalate: a second, larger round at a neater bias for words nobody wrote cleanly
+                    K2 = 2 * K
+                    rows = [t for t, _, _, _ in retry for _ in range(K2)]
+                    seeds = [self._seed_for(t, v) + 1000 + k for t, v, _, _ in retry for k in range(K2)]
+                    more = self._net.sample(rows, style=self.style, bias=self.bias + 0.5, seeds=seeds)
+                    for j, (t, v, score, c) in enumerate(retry):
+                        score2, c2 = self._choose(t, more[j * K2:(j + 1) * K2])
+                        pick = c2 if score2 + 0.02 < score else c
+                        self._store(t, v, pick)
+                        out[(t, v)] = pick
+        u = self.unit_scale()
+        return [to_ink(out[j].sample, self.x_height, unit_scale=u) for j in jobs]
 
     def report(self, texts, variant=0):
         return [(t, self._load(t, variant).read if self._load(t, variant) else None) for t in texts]

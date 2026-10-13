@@ -49,9 +49,11 @@ def _resample(p, step=0.12):
 def outline(stroke: np.ndarray, pen: Pen, rng: np.random.Generator | None = None):
     """Closed polygon (k, 2) for one stroke, or a small disc for a dot."""
     p = np.asarray(stroke, dtype=float)
-    if len(p) == 1 or np.ptp(p, axis=0).max() < 0.15:
+    ext = np.ptp(p, axis=0).max() if len(p) > 1 else 0.0
+    if len(p) == 1 or ext < 0.6:
+        # dots (decimal points, i-dots, full stops) are pressed, so they come out as firm round dabs
         c = p.mean(axis=0)
-        r = pen.width * 0.62
+        r = max(pen.width * 0.78, ext / 2 + pen.width * 0.45)
         t = np.linspace(0, 2 * np.pi, 14, endpoint=False)
         return np.c_[c[0] + r * np.cos(t), c[1] + r * np.sin(t)]
     # speed proxy from the ORIGINAL sampling density: sparse points = fast hand

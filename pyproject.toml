@@ -1,0 +1,16 @@
+[project]
+name = "hwsynth"
+version = "0.1.0"
+description = "Deterministic handwriting synthesis: a NumPy port of the Graves handwriting network, a single-stroke glyph pen for maths, handwritten maths typesetting, hand-drawn diagrams and PDF export."
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "scipy>=1.10", "pyyaml>=6"]
+
+[project.optional-dependencies]
+# OCR is used only to rank candidate samples; without it the shape check still runs.
+verify = ["rapidocr-onnxruntime>=1.2", "opencv-python>=4.8"]
+
+[tool.setuptools.packages.find]
+include = ["hwsynth*", "integrations*"]
+
+[tool.setuptools.package-data]
+hwsynth = ["data/*.npz", "data/styles/*.npy", "data/fonts/*"]

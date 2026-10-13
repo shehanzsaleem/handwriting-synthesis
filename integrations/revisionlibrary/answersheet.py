@@ -80,7 +80,7 @@ def _helv_width(s, size_pt):
 def _printable(s):
     rep = {'−': '-', 'π': 'pi', 'θ': 'theta', '√': 'sqrt', '≤': '<=', '≥': '>=', '→': '->', '⇌': '<=>',
            '’': "'", '‘': "'", 'Δ': 'Delta', 'λ': 'lambda', 'μ': 'u', 'Σ': 'Sum', '∫': 'integral',
-           '≠': '!=', '≈': '~', '₂': '2', '₃': '3', '₄': '4', '⁻': '-', '⁺': '+', '·': '.'}
+           '≠': '!=', '≈': '~', '₂': '2', '₃': '3', '₄': '4', '⁻': '-', '⁺': '+'}
     return ''.join(rep.get(c, c) for c in s)
 
 
@@ -281,7 +281,7 @@ class Composer:
     def page(self):
         return self.pages[-1]
 
-    def _baseline_for(self, asc, gap=1.2):
+    def _baseline_for(self, asc, gap=0.5):
         """Lowest-possible baseline on a rule such that the ink clears what is above."""
         p = self.paper
         need = self.y_free + asc + gap

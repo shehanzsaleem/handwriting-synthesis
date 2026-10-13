@@ -251,7 +251,8 @@ class Sketch:
         if xlabel:
             self.label(b + [-1, -2.2], xlabel, pen=pen, anchor='right', scale=0.8, data=False)
         if ylabel:
-            self.label(d + [1.8, 1.5], ylabel, pen=pen, anchor='left', scale=0.8, data=False)
+            # above the arrow tip, clear of the top tick label
+            self.label(d + [-1.0, -4.2], ylabel, pen=pen, anchor='left', scale=0.8, data=False)
         if origin_label and dx0 <= 0 <= dx1 and dy0 <= 0 <= dy1:
             o = self.P([0, 0])
             self.label(o + [-2.6, 3.4], '$O$', pen=pen, scale=0.7, data=False)
@@ -287,8 +288,8 @@ class Sketch:
         if col_widths is None:
             col_widths = [max((b.width for r in boxes for b in ([r[j]] if j < len(r) and r[j] else []))
                               , default=6) + 4 for j in range(ncol)]
-        row_h = row_h or max(2.6 * self.xh + 1.2, max((b.ascent + b.descent for r in boxes for b in r if b),
-                                                      default=0) + 2.4)
+        row_h = row_h or max(3.0 * self.xh + 2.0, max((b.ascent + b.descent for r in boxes for b in r if b),
+                                                      default=0) + 3.4)
         x0, y0 = at
         W, H = sum(col_widths), row_h * len(rows)
         m, self.map = self.map, None

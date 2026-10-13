@@ -18,7 +18,7 @@ import numpy as np
 
 from .glyphs import GlyphPen
 from .model import SUPPORTED
-from .strokes import Ink
+from .strokes import Ink, replace_letters
 from .writer import Writer
 
 PROSE_PUNCT = set('.,;:!?\'"()-')
@@ -30,17 +30,18 @@ class HandProfile:
     name: str = 'student'
     style: int = 9              # neural priming style (0-12)
     bias: float = 1.0           # neatness: higher = neater, less varied
-    x_height: float = 2.3       # mm
+    x_height: float = 2.05      # mm
     glyph_font: str = 'EMSAllure'
     glyph_upper: str = 'EMSReadability'
     glyph_scale: float = 1.0    # glyph-pen x-height relative to ``x_height``
-    neural_scale: float = 1.25  # network ink is measured to its loop tops; this matches it to the glyphs
+    neural_scale: float = 1.0   # network ink is measured to its loop tops; this matches it to the glyphs
     slant: float = 6.0          # degrees, for glyph-pen characters
     jitter: float = 1.0         # glyph-pen variation (0 = font-perfect)
     word_space: float = 1.15    # gap between words, in x-heights
     baseline_wander: float = 0.06  # word-to-word baseline drift, in x-heights
     candidates: int = 6         # best-of-K for neural words
     variants: int = 3           # distinct renderings of a repeated word
+    repair: str = 'x'           # letters the network writes badly: drawn by the glyph pen inside the word
     seed: int = 0
 
     def with_(self, **kw):
@@ -51,8 +52,8 @@ PROFILES = {
     'student': HandProfile(),
     'student-neat': HandProfile(name='student-neat', style=5, bias=1.2, slant=4.0),
     'student-quick': HandProfile(name='student-quick', style=7, bias=0.75, slant=8.0, jitter=1.25),
-    'teacher': HandProfile(name='teacher', style=11, bias=1.1, slant=10.0, x_height=2.2),
-    'ipad': HandProfile(name='ipad', style=3, bias=1.15, slant=3.0, x_height=2.5),
+    'teacher': HandProfile(name='teacher', style=11, bias=1.1, slant=10.0, x_height=2.0),
+    'ipad': HandProfile(name='ipad', style=3, bias=1.15, slant=3.0, x_height=2.2),
 }
 
 
@@ -103,9 +104,14 @@ class Hand:
         neural = list(dict.fromkeys((q[1], q[2]) for q in plan if q[0] == 'n'))
         inks = dict(zip(neural, self._writer.write_many([t for t, _ in neural], [v for _, v in neural])))
         out = []
+        rep = set(self.profile.repair)
         for q in plan:
             if q[0] == 'n':
-                out.append(inks[(q[1], q[2])])
+                ink = inks[(q[1], q[2])]
+                if rep & set(q[1]):
+                    ink = replace_letters(ink, rep, lambda ch, w=q[1]: self.glyphs(ch, key=f'rep:{w}:{q[2]}'),
+                                          self.profile.x_height)
+                out.append(ink)
             else:
                 out.append(self.glyphs(q[1], key=q[2]))
         return out

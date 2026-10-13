@@ -26,6 +26,8 @@ class Ink:
     descent: float           # bottom of ink below baseline (positive mm)
     char_spans: list = field(default_factory=list)  # (x0, x1) per character, mm
     text: str = ''
+    char_vspans: list = field(default_factory=list)  # (top, bottom) per character, mm, y down
+    stroke_ci: list = field(default_factory=list)    # per stroke: the character index of each point
 
     def translated(self, dx, dy):
         return [s + np.array([dx, dy]) for s in self.strokes]
@@ -50,8 +52,13 @@ def _smooth(p):
     return p
 
 
-def to_ink(sample: Sample, x_height_mm: float) -> Ink:
-    """Clean a sample, find its baseline and x-height from the attention map, scale to mm."""
+def to_ink(sample: Sample, x_height_mm: float, unit_scale: float | None = None) -> Ink:
+    """Clean a sample, find its baseline from the attention map and scale to mm.
+
+    ``unit_scale`` (mm per network unit) should come from a per-style calibration
+    so that every word of a hand keeps its natural size; without it the word's
+    own x-height estimate is used (noisy for short words).
+    """
     off = sample.offsets.copy()
     off[0, :2] = 0.0
     ci = sample.char_index
@@ -75,7 +82,7 @@ def to_ink(sample: Sample, x_height_mm: float) -> Ink:
     def char_points(cls):
         return np.array([i for i in range(len(xy)) if 0 <= ci[i] < len(text) and text[ci[i]] in cls])
 
-    base_idx = char_points(XHEIGHT | ASCENDERS - set('()"\'#!?'))
+    base_idx = char_points(XHEIGHT | set('i') | (ASCENDERS - set('()"\'#!?')))
     if len(base_idx) < 4:
         base_idx = np.arange(len(xy))
     # baseline: per character, take the lowest point (largest y), then fit a line
@@ -109,7 +116,7 @@ def to_ink(sample: Sample, x_height_mm: float) -> Ink:
         tall = char_points(ASCENDERS)
         xh = float(-xy[tall, 1].min() / 1.45) if len(tall) else float(-xy[:, 1].min())
     xh = max(xh, 1e-3)
-    scale = x_height_mm / xh
+    scale = unit_scale if unit_scale else x_height_mm / xh
     xy *= scale
     x0 = min(xy[a:b, 0].min() for a, b in spans)
     xy[:, 0] -= x0
@@ -127,18 +134,56 @@ def to_ink(sample: Sample, x_height_mm: float) -> Ink:
                 continue
             kept.append((a, b))
         spans = kept or spans
-    strokes = []
+    strokes, stroke_ci = [], []
     for a, b in spans:
         p = _smooth(xy[a:b])
         if len(p) >= 2 or (len(p) == 1):
             strokes.append(p)
+            stroke_ci.append(ci[a:b].copy())
     pts = np.vstack(strokes)
-    char_spans = []
+    char_spans, char_vspans = [], []
     for k in range(len(text)):
         m = ci == k
-        if m.any() and text[k] != ' ':
+        if m.sum() >= 2 and text[k] != ' ':
             char_spans.append((float(xy[m, 0].min()), float(xy[m, 0].max())))
+            char_vspans.append((float(xy[m, 1].min()), float(xy[m, 1].max())))
         else:
             char_spans.append(None)
+            char_vspans.append(None)
     return Ink(strokes=strokes, width=float(pts[:, 0].max()), ascent=float(-pts[:, 1].min()),
-               descent=float(max(pts[:, 1].max(), 0.0)), char_spans=char_spans, text=text)
+               descent=float(max(pts[:, 1].max(), 0.0)), char_spans=char_spans, text=text,
+               char_vspans=char_vspans, stroke_ci=stroke_ci)
+
+
+def replace_letters(ink: Ink, letters: set, glyph_writer, x_height: float) -> Ink:
+    """Swap the network's drawing of some letters for glyph-pen ones, in place in the word.
+
+    ``glyph_writer(ch)`` returns an Ink for one character (baseline 0). Points the
+    attention map assigns to a replaced letter are removed (splitting strokes
+    there) and the glyph is centred in that letter's slot.
+    """
+    if not ink.stroke_ci or not any(c in letters for c in ink.text):
+        return ink
+    targets = [k for k, c in enumerate(ink.text) if c in letters and ink.char_spans[k]]
+    if not targets:
+        return ink
+    out = []
+    for st, cis in zip(ink.strokes, ink.stroke_ci):
+        keep = ~np.isin(cis, targets)
+        if keep.all():
+            out.append(st)
+            continue
+        idx = np.where(keep)[0]
+        if len(idx):
+            for run in np.split(idx, np.where(np.diff(idx) > 1)[0] + 1):
+                if len(run) >= 2:
+                    out.append(st[run])
+    for k in targets:
+        x0, x1 = ink.char_spans[k]
+        g = glyph_writer(ink.text[k])
+        if not g.strokes:
+            continue
+        gw = max(g.width, 1e-6)
+        dx = (x0 + x1) / 2 - gw / 2
+        out += [q + [dx, 0] for q in g.strokes]
+    return Ink(out, ink.width, ink.ascent, ink.descent, ink.char_spans, ink.text, ink.char_vspans, [])
